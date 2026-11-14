@@ -15,6 +15,7 @@ import { createWeaponView } from './weapon.js';
 import { createBotsView } from './botsview.js';
 import { createFx } from './fx.js';
 import { createHud } from './hud.js';
+import { createShotDownload, setShotStatus } from './shotdownload.js';
 
 const params = new URLSearchParams(window.location.search);
 const shot = params.get('shot');
@@ -380,47 +381,49 @@ function paintTwiceThenReady() {
 // HUD (health, ammo, timer, score, plant bar, banner, title menu) laid out
 // at 1280x800. Nothing is drawn by hand, nothing is composited from parts,
 // no pixel is invented: the browser rasterises the real page into the PNG.
-// The <a download> anchor stays in the DOM (id="shot-download") so a
-// capturing agent can click it again if the automatic download does not
-// register. window.__shotReady is set only after the download has started,
-// and window.__shotExport names which path produced the file.
+// The <a download> anchor stays in the DOM (id="shot-download") as a real
+// visible link — the capturing browser has no JS eval and cannot click
+// display:none elements, so the link must be visible and clickable, and its
+// blob URL must stay alive until the browser clicks it (see shotdownload.js:
+// no 5 s revoke; a real user click retires it, or a 10-minute timeout does).
+// A #shot-status element shows the same state as visible page text, so the
+// capturing browser can read readiness + export path without JS eval.
+// window.__shotReady is set only after the download has started, and
+// window.__shotExport names which path produced the file.
 const SHOT_EXPORT = { start: '1-start.png', play: '2-play.png', plant: '3-plant.png', end: '4-end.png' };
 
+const shotDownload = createShotDownload(document, URL);
+
 function downloadBlob(blob, filename) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.id = 'shot-download';
-  a.href = url;
-  a.download = filename;
-  a.style.display = 'none';
-  a.textContent = `Download ${filename}`;
-  document.body.appendChild(a);
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 5000);
-  return a;
+  return shotDownload.attach(blob, filename);
 }
 
 // PNG first; if the PNG busts the 256 KiB gate, JPEG (allowed by the gate)
-// at the same shot name with a .jpg extension.
+// at the same shot name with a .jpg extension. done(mode, filename) carries
+// the actual file name so the status line can name it.
 function downloadWithSizeCap(canvas2d, pngName, done) {
   canvas2d.toBlob((png) => {
     if (png && png.size <= 262144) {
       downloadBlob(png, pngName);
-      done('page-png');
+      done('page-png', pngName);
       return;
     }
+    const jpgName = pngName.replace(/\.png$/, '.jpg');
     canvas2d.toBlob((jpg) => {
-      if (jpg) downloadBlob(jpg, pngName.replace(/\.png$/, '.jpg'));
-      done(jpg ? 'page-jpeg' : 'error');
+      if (jpg) downloadBlob(jpg, jpgName);
+      done(jpg ? 'page-jpeg' : 'error', jpg ? jpgName : null);
     }, 'image/jpeg', 0.85);
   }, 'image/png');
 }
 
 function exportShotFrame() {
   const pngName = SHOT_EXPORT[shot] || 'shot.png';
-  const finish = (mode) => {
+  const finish = (mode, filename) => {
     window.__shotExport = mode;
     window.__shotReady = true;
+    setShotStatus(document, filename
+      ? `Shot ready — ${filename} (${mode})`
+      : 'Shot export failed (error) — no file downloaded');
     frozen = true;
   };
   // 1. The 3D frame, captured synchronously in the same task as the render
@@ -432,6 +435,9 @@ function exportShotFrame() {
   try {
     const clone = document.documentElement.cloneNode(true);
     clone.querySelectorAll('script').forEach((s) => s.remove());
+    // The export UI is for the capturing browser, not the screenshot: the
+    // status line and the download link must not appear in the PNG itself.
+    clone.querySelectorAll('#shot-status, #shot-download').forEach((el) => el.remove());
     const sceneImg = document.createElement('img');
     sceneImg.setAttribute('src', sceneUrl);
     sceneImg.setAttribute('width', '1280');
@@ -469,9 +475,10 @@ function fallbackCanvasOnly(sceneUrl, pngName, finish) {
   fetch(sceneUrl).then((res) => res.blob()).then((png) => {
     if (png.size <= 262144) {
       downloadBlob(png, pngName);
-      finish('canvas-png');
+      finish('canvas-png', pngName);
       return;
     }
+    const jpgName = pngName.replace(/\.png$/, '.jpg');
     const img = new Image();
     img.onload = () => {
       const out = document.createElement('canvas');
@@ -479,13 +486,13 @@ function fallbackCanvasOnly(sceneUrl, pngName, finish) {
       out.height = 800;
       out.getContext('2d').drawImage(img, 0, 0, 1280, 800);
       out.toBlob((jpg) => {
-        if (jpg) downloadBlob(jpg, pngName.replace(/\.png$/, '.jpg'));
-        finish(jpg ? 'canvas-jpeg' : 'error');
+        if (jpg) downloadBlob(jpg, jpgName);
+        finish(jpg ? 'canvas-jpeg' : 'error', jpg ? jpgName : null);
       }, 'image/jpeg', 0.85);
     };
-    img.onerror = () => finish('error');
+    img.onerror = () => finish('error', null);
     img.src = sceneUrl;
-  }).catch(() => finish('error'));
+  }).catch(() => finish('error', null));
 }
 
 function runShot(name) {
@@ -494,6 +501,7 @@ function runShot(name) {
   // writes. The canvas CSS still fills the window (updateStyle false), so the
   // live view looks stretched; the exported file is a true 1280x800 render.
   hud.setShotMode(true);
+  setShotStatus(document, 'Shot export: preparing…');
   renderer.setPixelRatio(1);
   renderer.setSize(1280, 800, false);
   camera.aspect = 1280 / 800;

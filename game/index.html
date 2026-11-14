@@ -136,6 +136,27 @@
   }
   #play:hover { filter: brightness(1.08); }
   #hint { font-size: 13px; color: var(--muted); margin-top: 18px; line-height: 1.7; }
+
+  /* Shot-export UI: only shown in ?shot= mode. The capturing browser has no
+     JS eval and cannot click display:none elements, so the download link is
+     a real visible link (bottom-left, above the title overlay) and the
+     status line shows readiness + export path as plain page text. Neither
+     element is part of the exported PNG — exportShotFrame strips both from
+     the rasterised clone. */
+  #shot-status {
+    position: fixed; left: 16px; bottom: 64px; z-index: 20;
+    padding: 8px 12px; font-size: 14px; font-weight: 600;
+    background: rgba(18, 20, 24, 0.85); color: var(--ink);
+    border: 1px solid rgba(236, 231, 219, 0.25); border-radius: 8px;
+    pointer-events: none;
+  }
+  #shot-download {
+    position: fixed; left: 16px; bottom: 16px; z-index: 20;
+    padding: 10px 16px; font-size: 15px; font-weight: 700;
+    color: #14161a; background: var(--sodium); border: none; border-radius: 8px;
+    text-decoration: none; cursor: pointer; pointer-events: auto;
+  }
+  #shot-download:hover { filter: brightness(1.08); }
 </style>
 </head>
 <body>
@@ -183,6 +204,7 @@
   <button id="play" type="button">Click to play</button>
   <div id="hint">WASD move · Mouse look · Click shoot · R reload · 1/2/3 weapons · G grenade · B buy · E plant / defuse · Ctrl crouch · Shift walk</div>
 </div>
+<div id="shot-status" hidden>Shot export: preparing…</div>
 <script type="importmap">
 {
   "imports": {
