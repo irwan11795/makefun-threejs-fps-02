@@ -82,6 +82,10 @@ export function createHud() {
   let hitTimer = 0;
   let bannerTimer = 0;
   let lastFeed = 0;
+  // Shot mode (?shot=): the staged frame is frozen, so time-based UI hiding
+  // makes no sense — a banner hidden by its timer after the freeze would
+  // vanish from the captured frame. main.js turns this on for every shot.
+  let shotMode = false;
 
   // Build the buy menu from the shop table, so its prices can never drift.
   for (const item of SHOP) {
@@ -171,12 +175,21 @@ export function createHud() {
       bannerCopy.textContent = text.copy;
       banner.hidden = false;
       clearTimeout(bannerTimer);
-      bannerTimer = setTimeout(() => {
-        banner.hidden = true;
-      }, 3800);
+      // In shot mode the frame is frozen for capture: the banner must stay
+      // up until the export, so it never auto-hides there.
+      if (!shotMode) {
+        bannerTimer = setTimeout(() => {
+          banner.hidden = true;
+        }, 3800);
+      }
     },
     hideBanner() {
       banner.hidden = true;
+    },
+    // Shot mode (?shot=): banners never auto-hide, so the frozen frame keeps
+    // them. Normal play is untouched — this is only on for staged captures.
+    setShotMode(on) {
+      shotMode = Boolean(on);
     },
     showOverlay(mode, detail) {
       const text = COPY[mode];

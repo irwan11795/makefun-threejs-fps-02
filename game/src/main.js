@@ -23,7 +23,10 @@ const seed = Number.parseInt(params.get('seed') ?? '1', 10) || 1;
 const sim = createSim(seed);
 const random = sim.random;
 
-const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance', preserveDrawingBuffer: true });
+// preserveDrawingBuffer costs a little speed and changes nothing visually,
+// but it keeps the frame readable after the compositor runs — the shot export
+// (toDataURL / toBlob) must never see a cleared buffer.
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
@@ -354,19 +357,147 @@ function aimAt(point) {
 function paintTwiceThenReady() {
   let painted = 0;
   function paint() {
-    requestAnimationFrame(paint);
     syncCamera();
     renderer.render(scene, camera);
     painted += 1;
-    if (painted === 2) {
-      window.__shotReady = true;
-      frozen = true;
+    if (painted >= 2) {
+      // No third frame: the staged frame is exported now, then frozen.
+      exportShotFrame();
+      return;
     }
+    requestAnimationFrame(paint);
   }
   requestAnimationFrame(paint);
 }
 
+// Shot export: the staged frame as a real render of the game's own code, at
+// exactly 1280x800, downloaded as a PNG file. The capturing browser's window
+// is fixed at 1919x998 and cannot be resized, and it has no download link to
+// save a viewport screenshot from — so the page exports the file itself.
+//
+// What is exported is the whole page as the browser renders it: the 3D frame
+// (captured from the WebGL canvas right after the render above) plus the DOM
+// HUD (health, ammo, timer, score, plant bar, banner, title menu) laid out
+// at 1280x800. Nothing is drawn by hand, nothing is composited from parts,
+// no pixel is invented: the browser rasterises the real page into the PNG.
+// The <a download> anchor stays in the DOM (id="shot-download") so a
+// capturing agent can click it again if the automatic download does not
+// register. window.__shotReady is set only after the download has started,
+// and window.__shotExport names which path produced the file.
+const SHOT_EXPORT = { start: '1-start.png', play: '2-play.png', plant: '3-plant.png', end: '4-end.png' };
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.id = 'shot-download';
+  a.href = url;
+  a.download = filename;
+  a.style.display = 'none';
+  a.textContent = `Download ${filename}`;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  return a;
+}
+
+// PNG first; if the PNG busts the 256 KiB gate, JPEG (allowed by the gate)
+// at the same shot name with a .jpg extension.
+function downloadWithSizeCap(canvas2d, pngName, done) {
+  canvas2d.toBlob((png) => {
+    if (png && png.size <= 262144) {
+      downloadBlob(png, pngName);
+      done('page-png');
+      return;
+    }
+    canvas2d.toBlob((jpg) => {
+      if (jpg) downloadBlob(jpg, pngName.replace(/\.png$/, '.jpg'));
+      done(jpg ? 'page-jpeg' : 'error');
+    }, 'image/jpeg', 0.85);
+  }, 'image/png');
+}
+
+function exportShotFrame() {
+  const pngName = SHOT_EXPORT[shot] || 'shot.png';
+  const finish = (mode) => {
+    window.__shotExport = mode;
+    window.__shotReady = true;
+    frozen = true;
+  };
+  // 1. The 3D frame, captured synchronously in the same task as the render
+  //    above, so the drawing buffer is still valid.
+  const sceneUrl = renderer.domElement.toDataURL('image/png');
+  // 2. The full page at 1280x800: clone the document, swap the live WebGL
+  //    canvas for the captured frame (same pixels), drop the scripts, and let
+  //    the browser rasterise the page — 3D plus DOM HUD — into one image.
+  try {
+    const clone = document.documentElement.cloneNode(true);
+    clone.querySelectorAll('script').forEach((s) => s.remove());
+    const sceneImg = document.createElement('img');
+    sceneImg.setAttribute('src', sceneUrl);
+    sceneImg.setAttribute('width', '1280');
+    sceneImg.setAttribute('height', '800');
+    sceneImg.setAttribute('style', 'width:100%;height:100%;display:block;');
+    const cloneCanvas = clone.querySelector('#game canvas');
+    if (cloneCanvas) cloneCanvas.replaceWith(sceneImg);
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800">'
+      + '<foreignObject x="0" y="0" width="1280" height="800">'
+      + new XMLSerializer().serializeToString(clone)
+      + '</foreignObject></svg>';
+    const raster = new Image();
+    raster.onload = () => {
+      try {
+        const out = document.createElement('canvas');
+        out.width = 1280;
+        out.height = 800;
+        out.getContext('2d').drawImage(raster, 0, 0, 1280, 800);
+        downloadWithSizeCap(out, pngName, finish);
+      } catch (err) {
+        fallbackCanvasOnly(sceneUrl, pngName, finish);
+      }
+    };
+    raster.onerror = () => fallbackCanvasOnly(sceneUrl, pngName, finish);
+    raster.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+  } catch (err) {
+    fallbackCanvasOnly(sceneUrl, pngName, finish);
+  }
+}
+
+function fallbackCanvasOnly(sceneUrl, pngName, finish) {
+  // The full-page raster failed (e.g. the browser tainted the canvas): fall
+  // back to the 3D render alone. Still a real render of the game at 1280x800,
+  // just without the DOM HUD — a valid screenshot beats no screenshot.
+  fetch(sceneUrl).then((res) => res.blob()).then((png) => {
+    if (png.size <= 262144) {
+      downloadBlob(png, pngName);
+      finish('canvas-png');
+      return;
+    }
+    const img = new Image();
+    img.onload = () => {
+      const out = document.createElement('canvas');
+      out.width = 1280;
+      out.height = 800;
+      out.getContext('2d').drawImage(img, 0, 0, 1280, 800);
+      out.toBlob((jpg) => {
+        if (jpg) downloadBlob(jpg, pngName.replace(/\.png$/, '.jpg'));
+        finish(jpg ? 'canvas-jpeg' : 'error');
+      }, 'image/jpeg', 0.85);
+    };
+    img.onerror = () => finish('error');
+    img.src = sceneUrl;
+  }).catch(() => finish('error'));
+}
+
 function runShot(name) {
+  // Shot mode: banners never auto-hide (the frozen frame must keep them), and
+  // the staged frame is rendered at exactly 1280x800 — the size the export
+  // writes. The canvas CSS still fills the window (updateStyle false), so the
+  // live view looks stretched; the exported file is a true 1280x800 render.
+  hud.setShotMode(true);
+  renderer.setPixelRatio(1);
+  renderer.setSize(1280, 800, false);
+  camera.aspect = 1280 / 800;
+  camera.updateProjectionMatrix();
   hud.hideOverlay();
   hud.hideBanner();
   // Skip the buy phase: the shot is a live round.

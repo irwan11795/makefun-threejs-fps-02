@@ -124,6 +124,10 @@
     align-items: center; justify-content: center; gap: 14px; text-align: center;
     background: rgba(12, 14, 17, 0.62); backdrop-filter: blur(3px);
   }
+  /* Author display:flex above beats the UA [hidden]{display:none} rule, so
+     without this the overlay could never be hidden at all — the title menu
+     stayed on screen over every shot frame. */
+  #overlay[hidden] { display: none; }
   #overlay-title { font-size: 44px; font-weight: 800; letter-spacing: 0.06em; }
   #overlay-copy { font-size: 16px; color: var(--muted); max-width: 520px; line-height: 1.5; }
   #play {
